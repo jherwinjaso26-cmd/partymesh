@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pass The Bomb</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <div id="menu-screen" class="screen">
+        <h1>Pass The Bomb</h1>
+        <input type="text" id="input-username" placeholder="Enter Username" maxlength="12" style="margin-bottom: 24px;">
+        <button id="btn-host">Host Game</button>
+        <div class="join-container">
+            <input type="text" id="input-room" placeholder="Room ID" maxlength="4">
+            <button id="btn-join">Join Game</button>
+        </div>
+    </div>
+
+    <div id="lobby-screen" class="screen hidden">
+        <h1>Lobby</h1>
+        <h2 id="display-room-id"></h2>
+        
+        <div id="player-list" style="margin-bottom: 20px;"></div>
+
+        <div id="customizer-panel" style="background: rgba(0,0,0,0.25); padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+            <p style="font-weight: bold; color: #a5b4fc; margin-bottom: 10px; text-align: center;">CUSTOMIZE CHARACTER</p>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="font-size: 0.9rem; color: #94a3b8;">Expression:</span>
+                <div>
+                    <button id="btn-prev-face" style="width:40px; padding:5px; margin:0; display:inline-block;">◀</button>
+                    <span id="label-face" style="width:60px; display:inline-block; text-align:center; font-weight:bold;">🙂</span>
+                    <button id="btn-next-face" style="width:40px; padding:5px; margin:0; display:inline-block;">▶</button>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="font-size: 0.9rem; color: #94a3b8;">Hat Accessory:</span>
+                <div>
+                    <button id="btn-prev-hat" style="width:40px; padding:5px; margin:0; display:inline-block;">◀</button>
+                    <span id="label-hat" style="width:60px; display:inline-block; text-align:center; font-weight:bold;">❌</span>
+                    <button id="btn-next-hat" style="width:40px; padding:5px; margin:0; display:inline-block;">▶</button>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.9rem; color: #94a3b8;">Outfit Color:</span>
+                <div>
+                    <button id="btn-prev-shirt" style="width:40px; padding:5px; margin:0; display:inline-block;">◀</button>
+                    <span id="label-shirt" style="width:60px; display:inline-block; text-align:center; font-weight:bold;">Blue</span>
+                    <button id="btn-next-shirt" style="width:40px; padding:5px; margin:0; display:inline-block;">▶</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="host-options-panel" class="hidden" style="text-align: left; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <p style="font-weight: bold; color: #fca5a5; margin-bottom: 10px; text-align: center;">HOST ROOM SETTINGS</p>
+            
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 8px;">Explosion Timer (Seconds):</label>
+            <select id="select-timer" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
+                <option value="15">15 Seconds (Fast)</option>
+                <option value="30" selected>30 Seconds (Normal)</option>
+                <option value="45">45 Seconds (Long)</option>
+                <option value="60">60 Seconds (Chaos)</option>
+            </select>
+
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Maximum Players (2 - 6):</label>
+            <select id="select-max-players" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
+                <option value="2">2 Players</option>
+                <option value="3">3 Players</option>
+                <option value="4" selected>4 Players</option>
+                <option value="5">5 Players</option>
+                <option value="6">6 Players</option>
+            </select>
+
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Obstacle Hazard Difficulty:</label>
+            <select id="select-difficulty" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
+                <option value="normal" selected>Normal (Solid Barriers)</option>
+                <option value="trap">Trap Mode (Slows when close)</option>
+            </select>
+        </div>
+
+        <button id="btn-start" class="hidden" style="background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);">🚀 Start Match</button>
+        <p id="wait-message" class="hidden" style="color: #94a3b8; margin-top: 15px; font-size: 0.9rem; animation: pulse 1.5s infinite;">Waiting for host to start...</p>
+    </div>
+
+    <div id="game-screen" class="hidden">
+        <div id="game-ui-overlay">
+            <div id="game-timer">Time Left: 30s</div>
+            <div id="game-ticker-message">Match started! Run away!</div>
+        </div>
+        
+        <canvas id="bomb-canvas" width="800" height="600"></canvas>
+        
+        <div id="joystick-zone">
+            <div id="joystick-base">
+                <div id="joystick-stick"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="network.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
