@@ -76,6 +76,12 @@ button:hover {
     background: linear-gradient(135deg, #dc2626, #b91c1c);
 }
 
+button:disabled {
+    background: #4b5563 !important;
+    box-shadow: none !important;
+    cursor: not-allowed;
+}
+
 input {
     background-color: rgba(15, 23, 42, 0.6);
     color: white;
@@ -104,18 +110,13 @@ input {
     padding-top: 24px;
 }
 
-#player-list p {
+#player-list p, .podium-row {
     background-color: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.03);
     padding: 12px;
     margin: 6px auto;
     border-radius: 6px;
     max-width: 280px;
-}
-
-#customizer-panel button {
-    display: inline-block !important;
-    vertical-align: middle;
 }
 
 #game-screen {
@@ -135,6 +136,10 @@ input {
 
 #game-screen.bomb-danger {
     background-color: #2d0606;
+}
+
+#game-screen.sudden-death {
+    background-color: #1e1b4b !important;
 }
 
 #bomb-canvas {
@@ -175,6 +180,46 @@ input {
     text-shadow: 0 2px 4px rgba(0,0,0,0.8);
 }
 
+#btn-dash-ability {
+    position: absolute;
+    bottom: 30px;
+    right: 35px;
+    width: 75px;
+    height: 75px;
+    border-radius: 50%;
+    font-size: 0.9rem;
+    font-weight: 800;
+    z-index: 130;
+    background: linear-gradient(135deg, #eab308, #ca8a04);
+    box-shadow: 0 6px 16px rgba(234, 179, 8, 0.4);
+    margin: 0;
+}
+
+#emote-wheel-bar {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    background: rgba(15, 23, 42, 0.7);
+    padding: 6px 12px;
+    border-radius: 30px;
+    border: 1px solid rgba(255,255,255,0.1);
+    z-index: 130;
+}
+
+.btn-emote-trigger {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    margin: 0;
+    font-size: 1.2rem;
+    border-radius: 50%;
+    background: #1f2937;
+    box-shadow: none;
+}
+
 #joystick-zone {
     position: fixed;
     bottom: 0;
@@ -200,22 +245,8 @@ input {
     display: block !important; 
 }
 
-#joystick-stick {
-    width: 45px;
-    height: 45px;
-    background: linear-gradient(135deg, #ef4444, #b91c1c);
-    border-radius: 50%;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    box-shadow: 0 4px 10px rgba(0,0,0,0.4);
-}
-
 @media (pointer: coarse) {
-    #joystick-zone {
-        display: block;
-    }
+    #joystick-zone { display: block; }
 }
 
 @keyframes pulse {

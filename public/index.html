@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+    <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -58,27 +58,24 @@
         <div id="host-options-panel" class="hidden" style="text-align: left; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
             <p style="font-weight: bold; color: #fca5a5; margin-bottom: 10px; text-align: center;">HOST ROOM SETTINGS</p>
             
-            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 8px;">Explosion Timer (Seconds):</label>
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 8px;">Explosion Timer:</label>
             <select id="select-timer" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
-                <option value="15">15 Seconds (Fast)</option>
-                <option value="30" selected>30 Seconds (Normal)</option>
-                <option value="45">45 Seconds (Long)</option>
-                <option value="60">60 Seconds (Chaos)</option>
+                <option value="15">15 Seconds</option>
+                <option value="30" selected>30 Seconds</option>
+                <option value="45">45 Seconds</option>
             </select>
 
-            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Maximum Players (2 - 6):</label>
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Maximum Players:</label>
             <select id="select-max-players" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
                 <option value="2">2 Players</option>
-                <option value="3">3 Players</option>
                 <option value="4" selected>4 Players</option>
-                <option value="5">5 Players</option>
                 <option value="6">6 Players</option>
             </select>
 
-            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Obstacle Hazard Difficulty:</label>
+            <label style="font-size: 0.85rem; color: #94a3b8; display: block; margin-top: 12px;">Obstacle Difficulty:</label>
             <select id="select-difficulty" style="width: 100%; padding: 10px; background: #1f2937; color: white; border: 1px solid #4f46e5; border-radius: 6px; margin-top: 4px;">
-                <option value="normal" selected>Normal (Solid Barriers)</option>
-                <option value="trap">Trap Mode (Slows when close)</option>
+                <option value="normal" selected>Normal</option>
+                <option value="trap">Trap Mode</option>
             </select>
         </div>
 
@@ -95,10 +92,23 @@
         <canvas id="bomb-canvas" width="800" height="600"></canvas>
         
         <div id="joystick-zone">
-            <div id="joystick-base">
-                <div id="joystick-stick"></div>
-            </div>
+            <div id="joystick-base"><div id="joystick-stick"></div></div>
         </div>
+
+        <button id="btn-dash-ability">DASH</button>
+
+        <div id="emote-wheel-bar">
+            <button class="btn-emote-trigger">😂</button>
+            <button class="btn-emote-trigger">👍</button>
+            <button class="btn-emote-trigger">🤬</button>
+            <button class="btn-emote-trigger">💀</button>
+        </div>
+    </div>
+
+    <div id="leaderboard-screen" class="screen hidden">
+        <h1 style="background: linear-gradient(135deg, #fbbf24, #f59e0b); background-clip: text; -webkit-background-clip: text;">Match Podium</h1>
+        <div id="podium-rows-container" style="margin: 20px 0; text-align: left;"></div>
+        <button id="btn-return-lobby" style="background: linear-gradient(135deg, #4f46e5, #6366f1); box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">Return to Lobby</button>
     </div>
 
     <script src="network.js"></script>
