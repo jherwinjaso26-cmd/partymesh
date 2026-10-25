@@ -4,16 +4,25 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ],
+        methods: ["GET", "POST"],
+        credentials: true
+    }
+});
 
 app.use(express.static('public'));
 
 const activeRooms = new Set();
 const roomDetails = {}; 
 
-const MAP_WIDTH = 800;
-const MAP_HEIGHT = 600;
-const OBSTACLE_SIZE = 40;
+const OBSTACLE_SIZE = 60;
+const PLAYER_BASE_SPEED = 5.6; 
+const MAP_TICK_RATE = 1000 / 60; 
 
 function generateRoomId() {
     const chars = '0123456789';
@@ -24,16 +33,55 @@ function generateRoomId() {
     return result;
 }
 
-function generateRandomObstacles() {
+function calculateDynamicMapDimensions(playerCount) {
+    let width = 1400;
+    let height = 1000;
+    if (playerCount > 8) {
+        width = 2200;
+        height = 1600;
+    } else if (playerCount > 4) {
+        width = 1800;
+        height = 1300;
+    }
+    return { width, height };
+}
+
+function generateTerrainObstacles(terrainType, playersPositions, mapW, mapH, difficulty) {
+    if (difficulty === 'none') return [];
+    
+    let count = 25;
+    if (difficulty === 'hard') count = 45;
+    if (mapW > 1800) count = Math.floor(count * 1.8);
+    else if (mapW > 1400) count = Math.floor(count * 1.4);
+
     const obstacles = [];
-    const count = 14;
     for (let i = 0; i < count; i++) {
-        let obsX = Math.floor(Math.random() * ((MAP_WIDTH - 120) / 40)) * 40 + 40;
-        let obsY = Math.floor(Math.random() * ((MAP_HEIGHT - 120) / 40)) * 40 + 40;
+        let obsX = Math.floor(Math.random() * ((mapW - 240) / 60)) * 60 + 120;
+        let obsY = Math.floor(Math.random() * ((mapH - 240) / 60)) * 60 + 120;
         
-        if (obsX >= 60 && obsX <= 250 && obsY >= 240 && obsY <= 360) continue;
-        if (!obstacles.some(o => o.x === obsX && o.y === obsY)) {
-            obstacles.push({ x: obsX, y: obsY, w: OBSTACLE_SIZE, h: OBSTACLE_SIZE });
+        let nearPlayer = false;
+        for (let p in playersPositions) {
+            if (Math.sqrt((obsX + 30 - playersPositions[p].x)**2 + (obsY + 30 - playersPositions[p].y)**2) < 150) { 
+                nearPlayer = true;
+                break;
+            }
+        }
+        
+        if (!nearPlayer && !obstacles.some(o => o.x === obsX && o.y === obsY)) {
+            let obsType = 'standard';
+            if (difficulty === 'hard') {
+                let rand = Math.random();
+                if (terrainType === 'volcano' && rand < 0.35) obsType = 'magma_vent';
+                else if (terrainType === 'jungle' && rand < 0.35) obsType = 'ancient_tree';
+                else if (rand < 0.2) obsType = 'spike_trap';
+            }
+            let moveAngle = Math.random() * Math.PI * 2;
+            obstacles.push({ 
+                id: 'obs_' + i + '_' + Math.floor(Math.random() * 10000),
+                x: obsX, y: obsY, w: OBSTACLE_SIZE, h: OBSTACLE_SIZE, type: obsType,
+                vx: Math.cos(moveAngle) * 1.5, vy: Math.sin(moveAngle) * 1.5,
+                phaseState: 'visible', phaseTimer: Date.now() + Math.random() * 5000 + 3000
+            });
         }
     }
     return obstacles;
@@ -41,317 +89,455 @@ function generateRandomObstacles() {
 
 function checkCollisionWithObstacles(x, y, radius, obstacles) {
     for (let obs of obstacles) {
+        if (obs.phaseState === 'hidden') continue;
         let closestX = Math.max(obs.x, Math.min(x, obs.x + obs.w));
         let closestY = Math.max(obs.y, Math.min(y, obs.y + obs.h));
         let dx = x - closestX;
         let dy = y - closestY;
-        if ((dx * dx + dy * dy) < (radius * radius)) return { hit: true };
+        let distSq = dx * dx + dy * dy;
+        if (distSq < (radius * radius)) {
+            return { collided: true, obs: obs, closestX: closestX, closestY: closestY };
+        }
     }
-    return { hit: false };
+    return { collided: false };
 }
 
-function checkProximityToTrap(x, y, obstacles) {
-    for (let obs of obstacles) {
-        let dx = x - (obs.x + obs.w / 2);
-        let dy = y - (obs.y + obs.h / 2);
-        if (Math.sqrt(dx * dx + dy * dy) < 45) return true;
+function processPhysicsFrame(roomId, room) {
+    if (!room.gameStarted || room.countdownActive) return;
+
+    const playerNames = Object.keys(room.positions);
+    const alivePlayers = playerNames.filter(p => !room.positions[p].isDead);
+
+    alivePlayers.forEach(name => {
+        const p = room.positions[name];
+        
+        let currentSpeed = PLAYER_BASE_SPEED;
+        if (p.isIt) currentSpeed *= 1.15; 
+        if (Date.now() < p.speedBoostExpiry) currentSpeed *= 1.5;
+        if (Date.now() < p.frozenExpiry) currentSpeed *= 0.2;
+
+        let targetX = p.x + p.vx * currentSpeed;
+        if (targetX - 20 >= 0 && targetX + 20 <= room.mapWidth) {
+            let col = checkCollisionWithObstacles(targetX, p.y, 20, room.obstacles);
+            if (!col.collided) {
+                p.x = targetX;
+            } else {
+                if (p.x < col.obs.x) p.x = col.closestX - 20.05;
+                else p.x = col.closestX + 20.05;
+            }
+        }
+
+        let targetY = p.y + p.vy * currentSpeed;
+        if (targetY - 20 >= 0 && targetY + 20 <= room.mapHeight) {
+            let col = checkCollisionWithObstacles(p.x, targetY, 20, room.obstacles);
+            if (!col.collided) {
+                p.y = targetY;
+            } else {
+                if (p.y < col.obs.y) p.y = col.closestY - 20.05;
+                else p.y = col.closestY + 20.05;
+            }
+        }
+
+        if (p.isIt) {
+            p.bombHoldDuration += (MAP_TICK_RATE / 1000);
+        }
+    });
+
+    if (room.difficulty === 'hard') {
+        let obstaclesChanged = false;
+        room.obstacles.forEach(obs => {
+            if (obs.type === 'magma_vent' || obs.type === 'standard') {
+                obs.x += obs.vx;
+                obs.y += obs.vy;
+                
+                if (obs.x <= 100 || obs.x + obs.w >= room.mapWidth - 100) { obs.vx *= -1; obs.x += obs.vx; }
+                if (obs.y <= 100 || obs.y + obs.h >= room.mapHeight - 100) { obs.vy *= -1; obs.y += obs.vy; }
+            }
+            
+            if (Date.now() > obs.phaseTimer) {
+                obs.phaseState = obs.phaseState === 'visible' ? 'hidden' : 'visible';
+                obs.phaseTimer = Date.now() + (obs.phaseState === 'visible' ? (Math.random() * 5000 + 4000) : (Math.random() * 3000 + 2000));
+                obstaclesChanged = true;
+            }
+        });
+
+        if (obstaclesChanged) {
+            io.to(roomId).emit('obstacles_phased_sync', { obstacles: room.obstacles });
+        }
     }
-    return false;
+
+    for (let i = room.powerups.length - 1; i >= 0; i--) {
+        const pu = room.powerups[i];
+        for (let name of alivePlayers) {
+            const p = room.positions[name];
+            const dist = Math.sqrt((p.x - pu.x)**2 + (p.y - pu.y)**2);
+            if (dist < 32) { 
+                if (pu.type === 'speed') {
+                    p.speedBoostExpiry = Date.now() + 4500;
+                } else if (pu.type === 'freeze_trap') {
+                    alivePlayers.forEach(other => {
+                        if (other !== name && !room.positions[other].isIt) {
+                            room.positions[other].frozenExpiry = Date.now() + 3000;
+                        }
+                    });
+                } else if (pu.type === 'shield') {
+                    p.hasShield = true;
+                }
+                
+                io.to(roomId).emit('powerup_collected_global', { username: name, type: pu.type });
+                room.powerups.splice(i, 1);
+                io.to(roomId).emit('items_updated', { powerups: room.powerups });
+                break;
+            }
+        }
+    }
+
+    const now = Date.now();
+    for (let i = 0; i < alivePlayers.length; i++) {
+        const nameA = alivePlayers[i];
+        const pA = room.positions[nameA];
+        if (!pA.isIt) continue;
+
+        for (let j = 0; j < alivePlayers.length; j++) {
+            const nameB = alivePlayers[j];
+            if (nameA === nameB) continue;
+            const pB = room.positions[nameB];
+
+            const dist = Math.sqrt((pA.x - pB.x)**2 + (pA.y - pB.y)**2);
+            if (dist < 40) { 
+                const lastTagA = room.lastTagTimes[nameA] || 0;
+                const lastTagB = room.lastTagTimes[nameB] || 0;
+
+                if (now - lastTagA > 1500 && now - lastTagB > 1500) {
+                    if (pB.hasShield) {
+                        pB.hasShield = false;
+                        pA.speedBoostExpiry = 0;
+                        pA.frozenExpiry = Date.now() + 1200; 
+                        room.lastTagTimes[nameA] = now;
+                        room.lastTagTimes[nameB] = now;
+                        io.to(roomId).emit('bomb_passed', { from: `🛡️ ${nameB}'s Shield`, to: `${nameA} (BLOCKED)` });
+                    } else {
+                        pA.isIt = false;
+                        pB.isIt = true;
+                        room.lastTagTimes[nameA] = now;
+                        room.lastTagTimes[nameB] = now;
+                        io.to(roomId).emit('bomb_passed', { from: nameA, to: nameB });
+                    }
+                    io.to(roomId).emit('positions_updated', { positions: room.positions });
+                }
+            }
+        }
+    }
+
+    io.to(roomId).emit('positions_updated', { positions: room.positions });
 }
 
-io.on('connection', (socket) => {
-    socket.on('create_room', (username) => {
-        const cleanName = username.trim();
-        if (!cleanName) return;
+function startMatchTimers(roomId, room) {
+    room.itemInterval = setInterval(() => {
+        if (!room.gameStarted || room.countdownActive) return;
 
-        let roomId = generateRoomId();
-        while (activeRooms.has(roomId)) roomId = generateRoomId();
-        
-        activeRooms.add(roomId);
-        roomDetails[roomId] = {
-            players: [cleanName],
-            positions: { 
-                [cleanName]: { 
-                    x: 100, y: 300, vx: 0, vy: 0, isIt: true, 
-                    face: '🙂', hat: '', shirt: '#3b82f6', 
-                    speedBoostExpiry: 0, dashExpiry: 0, isGhost: false,
-                    isFakeIt: false, fakeItExpiry: 0, activeEmote: '', emoteExpiry: 0,
-                    bombHoldDuration: 0
-                } 
-            },
-            obstacles: [],
-            powerups: [],
-            decoys: [],
-            maxSlots: 6,
-            timerDuration: 30,
-            hazardMode: 'normal',
-            gameStarted: false,
-            loopInterval: null,
-            itemInterval: null,
-            lastTagTime: 0,
-            suddenDeathActive: false
-        };
-        
-        socket.join(roomId);
-        socket.username = cleanName;
-        socket.currentRoom = roomId;
-        socket.emit('room_created', { roomId, players: roomDetails[roomId].players });
-    });
-
-    socket.on('join_room', ({ roomId, username }) => {
-        const uppercaseId = roomId.trim();
-        const cleanName = username.trim();
-
-        if (!activeRooms.has(uppercaseId)) return;
-        const room = roomDetails[uppercaseId];
-        if (room.gameStarted || room.players.length >= room.maxSlots || room.players.some(p => p.toLowerCase() === cleanName.toLowerCase())) return;
-
-        room.players.push(cleanName);
-        room.positions[cleanName] = { 
-            x: 100, y: 100 + (room.players.length * 80), vx: 0, vy: 0, isIt: false, 
-            face: '🙂', hat: '', shirt: '#3b82f6', speedBoostExpiry: 0, dashExpiry: 0, isGhost: false,
-            isFakeIt: false, fakeItExpiry: 0, activeEmote: '', emoteExpiry: 0,
-            bombHoldDuration: 0
-        };
-        
-        socket.join(uppercaseId);
-        socket.username = cleanName;
-        socket.currentRoom = uppercaseId;
-        io.to(uppercaseId).emit('room_updated', { roomId: uppercaseId, players: room.players });
-    });
-
-    socket.on('update_player_cosmetics', (cosmetics) => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const playerPos = roomDetails[roomId].positions[socket.username];
-            if (playerPos) {
-                playerPos.face = cosmetics.face;
-                playerPos.hat = cosmetics.hat;
-                playerPos.shirt = cosmetics.shirt;
+        if (room.powerups.length < room.maxItemsCount) {
+            let px = Math.floor(Math.random() * (room.mapWidth - 240)) + 120;
+            let py = Math.floor(Math.random() * (room.mapHeight - 240)) + 120;
+            if (!checkCollisionWithObstacles(px, py, 20, room.obstacles).collided) {
+                let rand = Math.random();
+                let itemType = rand < 0.4 ? 'speed' : (rand < 0.75 ? 'freeze_trap' : 'shield');
+                room.powerups.push({ x: px, y: py, type: itemType });
             }
         }
-    });
+        io.to(roomId).emit('items_updated', { powerups: room.powerups });
+    }, room.spawnRateTime);
 
-    socket.on('trigger_emote', (emote) => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const pos = roomDetails[roomId].positions[socket.username];
-            if (pos && !pos.isGhost) {
-                pos.activeEmote = emote;
-                pos.emoteExpiry = Date.now() + 2000;
-            }
-        }
-    });
+    room.loopInterval = setInterval(() => {
+        if (!room.gameStarted || room.countdownActive) return;
 
-    socket.on('trigger_dash', () => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const room = roomDetails[roomId];
-            const pos = room.positions[socket.username];
-            if (room.gameStarted && pos && !pos.isGhost && Date.now() > pos.dashExpiry) {
-                pos.speedBoostExpiry = Date.now() + 1000;
-                pos.dashExpiry = Date.now() + 4000;
-                socket.emit('dash_cooldown_started', 4);
-            }
-        }
-    });
+        room.bombFuseLeft--;
+        io.to(roomId).emit('timer_tick', { seconds: room.bombFuseLeft });
 
-    socket.on('start_game_signal', (config) => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const room = roomDetails[roomId];
-            room.maxSlots = config.maxPlayers;
-            room.timerDuration = config.duration;
-            room.hazardMode = config.difficulty;
-            room.obstacles = generateRandomObstacles();
-            room.powerups = [];
-            room.decoys = [];
-            room.gameStarted = true;
-            room.suddenDeathActive = false;
+        if (room.bombFuseLeft <= 0) {
+            let currentCarriers = Object.keys(room.positions).filter(p => room.positions[p].isIt && !room.positions[p].isDead);
             
-            for (let p in room.positions) {
-                room.positions[p].isGhost = false;
-                room.positions[p].isFakeIt = false;
-                room.positions[p].bombHoldDuration = 0;
-            }
-            
-            io.to(roomId).emit('game_started', { obstacles: room.obstacles, difficulty: room.hazardMode });
-            
-            let timeLeft = room.timerDuration;
-            io.to(roomId).emit('timer_tick', timeLeft);
-
-            room.itemInterval = setInterval(() => {
-                if (room.powerups.length < 2) {
-                    let px = Math.floor(Math.random() * (MAP_WIDTH - 60)) + 30;
-                    let py = Math.floor(Math.random() * (MAP_HEIGHT - 60)) + 30;
-                    if (!checkCollisionWithObstacles(px, py, 15, room.obstacles).hit) {
-                        room.powerups.push({ x: px, y: py });
-                    }
-                }
-                if (room.decoys.length < 2) {
-                    let dx = Math.floor(Math.random() * (MAP_WIDTH - 60)) + 30;
-                    let dy = Math.floor(Math.random() * (MAP_HEIGHT - 60)) + 30;
-                    if (!checkCollisionWithObstacles(dx, dy, 15, room.obstacles).hit) {
-                        room.decoys.push({ x: dx, y: dy });
-                    }
-                }
-                io.to(roomId).emit('items_updated', { powerups: room.powerups, decoys: room.decoys });
-            }, 5000);
-            
-            room.loopInterval = setInterval(() => {
-                timeLeft--;
-                io.to(roomId).emit('timer_tick', timeLeft);
-
-                if (timeLeft === 10 && !room.suddenDeathActive) {
-                    room.suddenDeathActive = true;
-                    room.obstacles = [];
-                    io.to(roomId).emit('sudden_death_triggered');
-                }
-
-                if (timeLeft <= 0) {
-                    clearInterval(room.loopInterval);
-                    clearInterval(room.itemInterval);
-                    let loser = Object.keys(room.positions).find(p => room.positions[p].isIt && !room.positions[p].isGhost) || "";
-                    
-                    const trackerData = [];
-                    for (let p in room.positions) {
-                        trackerData.push({ name: p, score: room.positions[p].bombHoldDuration, isLoser: p === loser });
-                    }
-                    trackerData.sort((a, b) => a.score - b.score);
-
-                    io.to(roomId).emit('game_over', { loser, stats: trackerData });
-                    room.gameStarted = false;
-                }
-            }, 1000);
-        }
-    });
-
-    socket.on('input_vector', ({ vx, vy }) => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const room = roomDetails[roomId];
-            const pos = room.positions[socket.username];
-            if (room.gameStarted && pos) {
-                let currentMaxSpeed = pos.isIt ? 5.5 : 4.5;
-                if (pos.isGhost) currentMaxSpeed = 3.0; 
-                else {
-                    if (Date.now() < pos.speedBoostExpiry) currentMaxSpeed *= 1.6;
-                    if (room.hazardMode === 'trap' && checkProximityToTrap(pos.x, pos.y, room.obstacles)) currentMaxSpeed *= 0.45;
-                }
-
-                const mag = Math.sqrt(vx * vx + vy * vy);
-                if (mag > 0) {
-                    pos.vx = (vx / mag) * currentMaxSpeed;
-                    pos.vy = (vy / mag) * currentMaxSpeed;
-                } else {
-                    pos.vx = 0;
-                    pos.vy = 0;
-                }
-            }
-        }
-    });
-
-    socket.on('disconnect', () => {
-        const roomId = socket.currentRoom;
-        if (roomId && roomDetails[roomId]) {
-            const room = roomDetails[roomId];
-            room.players = room.players.filter(p => p !== socket.username);
-            delete room.positions[socket.username];
-if (room.players.length === 0) {
-clearInterval(room.loopInterval);
-clearInterval(room.itemInterval);
-activeRooms.delete(roomId);
-delete roomDetails[roomId];
+            currentCarriers.forEach(carrier => {
+                room.positions[carrier].isDead = true;
+room.positions[carrier].isIt = false;
+room.positions[carrier].vx = 0;
+room.positions[carrier].vy = 0;
+});
+let blastSources = currentCarriers.map(c => ({ x: room.positions[c].x, y: room.positions[c].y }));
+io.to(roomId).emit('bomb_detonated_pulse', { origins: blastSources });
+let survivors = Object.keys(room.positions).filter(p => !room.positions[p].isDead);
+if (survivors.length <= 1) {
+endMatchSession(roomId, room);
+return;
 } else {
-if (Object.keys(room.positions).length > 0 && !Object.keys(room.positions).some(p => room.positions[p].isIt)) {
-let nextActive = Object.keys(room.positions)[0];
-if (room.positions[nextActive]) room.positions[nextActive].isIt = true;
+let bombCount = 1;
+if (survivors.length >= 10) bombCount = 3;
+else if (survivors.length >= 6) bombCount = 2;
+let shuffledSurvivors = [...survivors].sort(() => 0.5 - Math.random());
+let now = Date.now();
+for (let i = 0; i < Math.min(bombCount, shuffledSurvivors.length); i++) {
+let nextTarget = shuffledSurvivors[i];
+room.positions[nextTarget].isIt = true;
+room.lastTagTimes[nextTarget] = now;
+io.to(roomId).emit('bomb_passed', { from: "ARENA SYSTEM", to: nextTarget });
 }
-io.to(roomId).emit('room_updated', { roomId, players: room.players });
+room.bombFuseLeft = 10;
+io.to(roomId).emit('timer_tick', { seconds: room.bombFuseLeft });
+io.to(roomId).emit('positions_updated', { positions: room.positions });
 }
 }
-});
-});
-setInterval(() => {
-for (let roomId in roomDetails) {
-const room = roomDetails[roomId];
-if (!room.gameStarted) continue;
+}, 1000);
+room.physicsInterval = setInterval(() => {
+processPhysicsFrame(roomId, room);
+}, MAP_TICK_RATE);
+}
+function runPreMatchSequence(roomId, room) {
+let countdownVal = 3;
+room.countdownActive = true;
+let survivors = Object.keys(room.positions).filter(p => !room.positions[p].isDead);
+let bombCount = 1;
+if (survivors.length >= 10) bombCount = 3;
+else if (survivors.length >= 6) bombCount = 2;
+let shuffled = [...survivors].sort(() => 0.5 - Math.random());
+let selectedHolders = [];
+for (let i = 0; i < Math.min(bombCount, shuffled.length); i++) {
+room.positions[shuffled[i]].isIt = true;
+selectedHolders.push(shuffled[i]);
+room.lastTagTimes[shuffled[i]] = Date.now();
+}
+io.to(roomId).emit('positions_updated', { positions: room.positions });
+let countInterval = setInterval(() => {
+io.to(roomId).emit('pre_match_countdown', { count: countdownVal, holders: selectedHolders });
+countdownVal--;
+if (countdownVal < 0) {
+clearInterval(countInterval);
+room.countdownActive = false;
+io.to(roomId).emit('match_begin_pulse');
+startMatchTimers(roomId, room);
+}
+}, 1000);
+}
+// Fixed room ID feature to follow user request constraints (numbers only summary)
+function endMatchSession(roomId, room) {
+if (room.loopInterval) clearInterval(room.loopInterval);
+if (room.itemInterval) clearInterval(room.itemInterval);
+if (room.physicsInterval) clearInterval(room.physicsInterval);
+room.gameStarted = false;
+const trackerData = [];
 for (let p in room.positions) {
-const pos = room.positions[p];
-let oldX = pos.x; pos.x += pos.vx;
-if (!pos.isGhost && checkCollisionWithObstacles(pos.x, pos.y, 14, room.obstacles).hit) {
-pos.x = oldX; pos.vx = 0;
+trackerData.push({ name: p, score: room.positions[p].bombHoldDuration, isLoser: room.positions[p].isDead });
 }
-let oldY = pos.y; pos.y += pos.vy;
-if (!pos.isGhost && checkCollisionWithObstacles(pos.x, pos.y, 14, room.obstacles).hit) {
-pos.y = oldY; pos.vy = 0;
+trackerData.sort((a, b) => a.score - b.score);
+io.to(roomId).emit('game_over', { stats: trackerData, losers: Object.keys(room.positions).filter(p => room.positions[p].isDead) });
 }
-for (let otherName in room.positions) {
-if (otherName !== p) {
-const otherPos = room.positions[otherName];
-if (otherPos.isGhost && !pos.isGhost) {
-let dx = pos.x - otherPos.x;
-let dy = pos.y - otherPos.y;
-if (Math.sqrt(dx * dx + dy * dy) < 26) {
-pos.x = oldX; pos.y = oldY;
-pos.vx *= 0.5; pos.vy *= 0.5;
+io.on('connection', (socket) => {
+socket.on('lobby_heartbeat', () => {
+if (socket.currentRoom && roomDetails[socket.currentRoom]) {
+const p = roomDetails[socket.currentRoom].positions[socket.username];
+if (p) p.lastActivePing = Date.now();
+}
+});
+socket.on('create_room', (username) => {
+const cleanName = username.trim();
+if (!cleanName) return;
+let roomId = generateRoomId();
+while (activeRooms.has(roomId)) roomId = generateRoomId();
+activeRooms.add(roomId);
+roomDetails[roomId] = {
+players: [cleanName],
+positions: {
+[cleanName]: {
+x: 200, y: 200, vx: 0, vy: 0, isIt: false,
+face: '🙂', hat: 'none', shirt: '#e0a96d',
+speedBoostExpiry: 0, frozenExpiry: 0, hasShield: false,
+activeEmote: '', emoteExpiry: 0,
+bombHoldDuration: 0, isDead: false, lastActivePing: Date.now()
+}
+},
+obstacles: [],
+powerups: [],
+maxSlots: 15,
+bombFuseLeft: 10,
+terrain: 'cyber',
+difficulty: 'medium',
+gameStarted: false,
+countdownActive: true,
+loopInterval: null,
+itemInterval: null,
+physicsInterval: null,
+lastTagTimes: {},
+spawnRateTime: 3500,
+maxItemsCount: 6,
+mapWidth: 1400,
+mapHeight: 1000
+};
+roomDetails[roomId].afkCheckInterval = setInterval(() => {
+const currentRoom = roomDetails[roomId];
+if (!currentRoom || currentRoom.gameStarted) return;
+const now = Date.now();
+currentRoom.players.forEach(playerName => {
+const pos = currentRoom.positions[playerName];
+if (pos && now - pos.lastActivePing > 10000) {
+currentRoom.players = currentRoom.players.filter(name => name !== playerName);
+delete currentRoom.positions[playerName];
+io.to(roomId).emit('room_updated', { roomId, players: currentRoom.players });
+io.to(roomId).emit('positions_updated', { positions: currentRoom.positions });
+}
+});
+}, 4000);
+socket.join(roomId);
+socket.username = cleanName;
+socket.currentRoom = roomId;
+socket.emit('room_created', { roomId, players: roomDetails[roomId].players });
+io.to(roomId).emit('positions_updated', { positions: roomDetails[roomId].positions });
+});
+socket.on('join_room', ({ roomId, username }) => {
+const uppercaseId = roomId.trim();
+const cleanName = username.trim();
+if (!activeRooms.has(uppercaseId)) return;
+const room = roomDetails[uppercaseId];
+if (room.players.some(p => p.toLowerCase() === cleanName.toLowerCase())) {
+socket.emit('join_denied', { message: "Username already taken in this room!" });
+return;
+}
+if (room.gameStarted || room.players.length >= room.maxSlots) return;
+room.players.push(cleanName);
+let spawnOffset = room.players.length * 45;
+room.positions[cleanName] = {
+x: 200 + (spawnOffset % 300), y: 200 + (Math.floor(spawnOffset / 300) * 50),
+vx: 0, vy: 0, isIt: false,
+face: '🙂', hat: 'none', shirt: '#e0a96d', speedBoostExpiry: 0, frozenExpiry: 0, hasShield: false,
+activeEmote: '', emoteExpiry: 0, bombHoldDuration: 0, isDead: false, lastActivePing: Date.now()
+};
+socket.join(uppercaseId);
+socket.username = cleanName;
+socket.currentRoom = uppercaseId;
+io.to(uppercaseId).emit('room_updated', { roomId: uppercaseId, players: room.players });
+io.to(uppercaseId).emit('positions_updated', { positions: room.positions });
+});
+socket.on('update_player_cosmetics', (cosmetics) => {
+const roomId = socket.currentRoom;
+if (roomId && roomDetails[roomId]) {
+const playerPos = roomDetails[roomId].positions[socket.username];
+if (playerPos) {
+playerPos.face = cosmetics.face;
+playerPos.hat = cosmetics.hat;
+playerPos.shirt = cosmetics.shirt;
+io.to(roomId).emit('positions_updated', { positions: roomDetails[roomId].positions });
 }
 }
+});
+socket.on('trigger_emote', (emote) => {
+const roomId = socket.currentRoom;
+if (roomId && roomDetails[roomId]) {
+const pos = roomDetails[roomId].positions[socket.username];
+if (pos && !pos.isDead) {
+pos.activeEmote = emote;
+pos.emoteExpiry = Date.now() + 2000;
+io.to(roomId).emit('emote_triggered_global', { username: socket.username, emote: emote });
 }
 }
-if (pos.x < 15) pos.x = 15; if (pos.x > MAP_WIDTH - 15) pos.x = MAP_WIDTH - 15;
-if (pos.y < 15) pos.y = 15; if (pos.y > MAP_HEIGHT - 15) pos.y = MAP_HEIGHT - 15;
-if (pos.isIt && !pos.isGhost) {
-pos.bombHoldDuration += 1 / 60;
-}
-if (!pos.isGhost) {
-for (let i = room.powerups.length - 1; i >= 0; i--) {
-let pu = room.powerups[i];
-let dx = pos.x - pu.x; let dy = pos.y - pu.y;
-if (Math.sqrt(dx * dx + dy * dy) < 24) {
-room.powerups.splice(i, 1);
-pos.speedBoostExpiry = Date.now() + 4000;
-io.to(roomId).emit('items_updated', { powerups: room.powerups, decoys: room.decoys });
-io.to(roomId).emit('powerup_collected', p);
+});
+socket.on('input_vector', ({ vx, vy }) => {
+const roomId = socket.currentRoom;
+if (roomId && roomDetails[roomId]) {
+const pos = roomDetails[roomId].positions[socket.username];
+if (pos && !pos.isDead) {
+pos.vx = vx;
+pos.vy = vy;
 }
 }
-for (let i = room.decoys.length - 1; i >= 0; i--) {
-let dec = room.decoys[i];
-let dx = pos.x - dec.x; let dy = pos.y - dec.y;
-if (Math.sqrt(dx * dx + dy * dy) < 24) {
-room.decoys.splice(i, 1);
-pos.isFakeIt = true;
-pos.fakeItExpiry = Date.now() + 4000;
-io.to(roomId).emit('items_updated', { powerups: room.powerups, decoys: room.decoys });
-io.to(roomId).emit('decoy_collected', p);
-}
-}
-}
-}
-const currentTime = Date.now();
-if (currentTime - room.lastTagTime > 1500) {
-let itPlayer = Object.keys(room.positions).find(p => room.positions[p].isIt && !room.positions[p].isGhost);
-if (itPlayer) {
-const itPos = room.positions[itPlayer];
-for (let other in room.positions) {
-if (other !== itPlayer && !room.positions[other].isGhost) {
-const otherPos = room.positions[other];
-let dx = otherPos.x - itPos.x; let dy = otherPos.y - itPos.y;
-if (Math.sqrt(dx * dx + dy * dy) < 28) {
-room.positions[itPlayer].isIt = false;
-room.positions[other].isIt = true;
-room.positions[itPlayer].vx = 0; room.positions[itPlayer].vy = 0;
-room.positions[other].vx = 0; room.positions[other].vy = 0;
-room.lastTagTime = currentTime;
-io.to(roomId).emit('bomb_passed', { from: itPlayer, to: other });
+});
+socket.on('start_game_signal', (config) => {
+const roomId = socket.currentRoom;
+if (roomId && roomDetails[roomId]) {
+const room = roomDetails[roomId];
+if (room.afkCheckInterval) clearInterval(room.afkCheckInterval);
+const playerNames = Object.keys(room.positions);
+const dimensions = calculateDynamicMapDimensions(playerNames.length);
+room.mapWidth = dimensions.width;
+room.mapHeight = dimensions.height;
+room.terrain = config.terrain || 'cyber';
+room.difficulty = config.difficulty || 'medium';
+room.bombFuseLeft = 10;
+room.gameStarted = true;
+room.powerups = [];
+playerNames.forEach((p, idx) => {
+let validSpawnFound = false;
+let finalSpawnX = 150;
+let finalSpawnY = 150;
+let generationRetries = 0;
+while (!validSpawnFound && generationRetries < 100) {
+generationRetries++;
+let potentialX = Math.floor(Math.random() * (room.mapWidth - 300)) + 150;
+let potentialY = Math.floor(Math.random() * (room.mapHeight - 300)) + 150;
+let clusterFault = false;
+for (let otherPlayer of playerNames) {
+if (otherPlayer === p) continue;
+let otherPos = room.positions[otherPlayer];
+if (otherPos && otherPos.x !== 200 && Math.sqrt((potentialX - otherPos.x)**2 + (potentialY - otherPos.y)**2) < 220) {
+clusterFault = true;
 break;
 }
 }
+if (!clusterFault) {
+finalSpawnX = potentialX;
+finalSpawnY = potentialY;
+validSpawnFound = true;
+}
+}
+room.positions[p].x = finalSpawnX;
+room.positions[p].y = finalSpawnY;
+room.positions[p].vx = 0;
+room.positions[p].vy = 0;
+room.positions[p].isIt = false;
+room.positions[p].isDead = false;
+room.positions[p].bombHoldDuration = 0;
+room.positions[p].hasShield = false;
+room.positions[p].speedBoostExpiry = 0;
+room.positions[p].frozenExpiry = 0;
+});
+room.obstacles = generateTerrainObstacles(room.terrain, room.positions, room.mapWidth, room.mapHeight, room.difficulty);
+io.to(roomId).emit('game_started', {
+obstacles: room.obstacles,
+terrain: room.terrain,
+mapWidth: room.mapWidth,
+mapHeight: room.mapHeight
+});
+runPreMatchSequence(roomId, room);
+}
+});
+socket.on('disconnect', () => {
+const roomId = socket.currentRoom;
+if (roomId && roomDetails[roomId]) {
+const room = roomDetails[roomId];
+room.players = room.players.filter(p => p !== socket.username);
+delete room.positions[socket.username];
+if (room.players.length === 0) {
+if (room.afkCheckInterval) clearInterval(room.afkCheckInterval);
+clearInterval(room.loopInterval);
+clearInterval(room.itemInterval);
+clearInterval(room.physicsInterval);
+activeRooms.delete(roomId);
+delete roomDetails[roomId];
+} else {
+io.to(roomId).emit('room_updated', { roomId, players: room.players });
+io.to(roomId).emit('positions_updated', { positions: room.positions });
+let carriers = Object.keys(room.positions).filter(p => room.positions[p].isIt && !room.positions[p].isDead);
+if (carriers.length === 0 && room.gameStarted && !room.countdownActive) {
+let survivors = Object.keys(room.positions).filter(p => !room.positions[p].isDead);
+if (survivors.length > 0) {
+let nextTarget = survivors[Math.floor(Math.random() * survivors.length)];
+room.positions[nextTarget].isIt = true;
+room.lastTagTimes[nextTarget] = Date.now();
+io.to(roomId).emit('bomb_passed', { from: "ARENA SYSTEM", to: nextTarget });
 }
 }
 }
-io.to(roomId).emit('positions_updated', room.positions);
 }
-}, 1000 / 60);
+});
+});
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`Arena engine listening on port ${PORT}`);
+});
