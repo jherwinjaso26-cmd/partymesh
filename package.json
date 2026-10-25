@@ -6,7 +6,13 @@
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["multiplayer", "socketio", "canvas-game", "realtime", "pass-the-bomb"],
+  "keywords": [
+    "multiplayer",
+    "socketio",
+    "canvas-game",
+    "realtime",
+    "pass-the-bomb"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
